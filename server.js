@@ -4,41 +4,33 @@ import dotenv from "dotenv";
 import cors from "cors";
 import http from "http";
 import { Server } from "socket.io";
-
 // Routes
 import authRoutes from "./routes/auth.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import hrRoutes from "./routes/hrRoutes.js";
 import jobRoutes from "./routes/createjobRoutes.js";
-import ApplyRoutes from "./routes/applyRoutes.js";
+import ApplyRoutes from './routes/applyRoutes.js';  
 import pdfRoutes from "./routes/pdfRoutes.js";
 
-// Chat setup
-import { setupChat, setupChatRoutes } from "./chat.js";
+// Import chat module
+import { setupChat, setupChatRoutes } from './chat.js';
 
-// Load environment variables
+// Load .env
 dotenv.config();
 
 const app = express();
 
-// ✅ Dynamic CORS setup for production
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  process.env.CLIENT_URL, // e.g. your Render frontend URL
-];
-
+// Middleware
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: [ "http://localhost:5173"],
     credentials: true,
   })
 );
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ✅ MongoDB Connection
+// MongoDB Connection
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
@@ -50,18 +42,18 @@ mongoose
     process.exit(1);
   });
 
-// ✅ API Routes
+// Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/hr", hrRoutes);
 app.use("/api/job", jobRoutes);
-app.use("/api/applications", ApplyRoutes);
+app.use('/api/applications', ApplyRoutes); 
 app.use("/api/pdfs", pdfRoutes);
 
-// Chat routes
+// Set up chat routes (must be after other routes)
 setupChatRoutes(app);
 
-// Health check
+// Test route
 app.get("/api/health", (req, res) => {
   res.json({ message: "✅ Server is running!" });
 });
@@ -77,23 +69,23 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Something went wrong on the server!" });
 });
 
-// ✅ HTTP Server + Socket.IO setup
+// Create HTTP server and integrate Socket.IO
 const server = http.createServer(app);
-
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
+    origin: [ 'http://localhost:5173'],
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
-// Chat socket setup
+// Set up chat Socket.IO events
 setupChat(io);
 
-// ✅ Start server
+// Start server
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📡 Socket.IO ready for connections`);
 });
+
