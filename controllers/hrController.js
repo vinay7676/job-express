@@ -6,8 +6,16 @@ import nodemailer from 'nodemailer';
 
 dotenv.config();
 
-// ---- Validate required env vars (fail fast) ----
-const requiredEnvs = ['EMAIL_USER', 'EMAIL_PASS', 'JWT_SECRET'];
+// ---- Validate required env vars ----
+const requiredEnvs = [
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'FROM_EMAIL',
+  'JWT_SECRET'
+];
+
 const missing = requiredEnvs.filter((k) => !process.env[k]);
 
 if (missing.length) {
@@ -19,20 +27,23 @@ if (missing.length) {
 }
 
 // =====================
-// Email Transporter Setup
+// Email Transporter Setup (BREVO SMTP)
 // =====================
-const transporter = nodemailer.createTransport({ // ✅ fixed here
-  service: 'gmail',
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: false, // Brevo uses TLS on port 587
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
   },
 });
 
-// Optional: Verify transporter at startup
-transporter.verify()
+// Optional: Verify Brevo transporter
+transporter
+  .verify()
   .then(() => {
-    console.log('Mailer: SMTP transporter verified');
+    console.log('Brevo SMTP: Transporter verified');
   })
   .catch((err) => {
     console.error('Mailer verification failed:', err.message || err);
@@ -40,26 +51,23 @@ transporter.verify()
   });
 
 // =====================
-// Utility: Generate 6-digit OTP
+// Generate 6-digit OTP
 // =====================
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const generateOTP = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
 
 // ✅ CREATE HR
 export const createHr = async (req, res) => {
   try {
     const { name, email, password, age, gender, contact } = req.body;
 
-    // Check if HR already exists
     const existingHr = await Hr.findOne({ email });
     if (existingHr) {
       return res.status(400).json({ message: 'HR with this email already exists' });
     }
 
-    // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new HR
     const newHr = new Hr({
       name,
       email,
@@ -71,7 +79,6 @@ export const createHr = async (req, res) => {
 
     await newHr.save();
 
-    // Exclude password in response
     const { password: _, ...hrWithoutPassword } = newHr.toObject();
 
     res.status(201).json({
@@ -89,26 +96,22 @@ export const loginHr = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Find HR by email
     const hr = await Hr.findOne({ email });
     if (!hr) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    // Compare password
     const isPasswordValid = await bcrypt.compare(password, hr.password);
     if (!isPasswordValid) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
       { id: hr._id, role: 'hr' },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    // Exclude password from response
     const { password: _, ...hrWithoutPassword } = hr.toObject();
 
     res.status(200).json({
@@ -125,7 +128,7 @@ export const loginHr = async (req, res) => {
 // ✅ GET ALL HRs
 export const getAllHrs = async (req, res) => {
   try {
-    const hrs = await Hr.find({}, '-password'); // exclude password field
+    const hrs = await Hr.find({}, '-password');
 
     if (hrs.length === 0) {
       return res.status(404).json({ message: 'No HRs found' });
@@ -142,26 +145,30 @@ export const getAllHrs = async (req, res) => {
 };
 
 // =====================
-// REQUEST OTP for Password Reset (HR)
+// REQUEST OTP for HR password reset
 // =====================
 export const requestOTPForHr = async (req, res) => {
   const { email } = req.body;
 
   try {
-    if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+    if (!email)
+      return res.status(400).json({ success: false, message: 'Email is required' });
 
     const hr = await Hr.findOne({ email });
-    if (!hr) return res.status(404).json({ success: false, message: 'HR with this email does not exist' });
+    if (!hr)
+      return res
+        .status(404)
+        .json({ success: false, message: 'HR with this email does not exist' });
 
     const otp = generateOTP();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
     hr.otp = otp;
     hr.otpExpires = otpExpires;
     await hr.save();
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: process.env.FROM_EMAIL,
       to: email,
       subject: 'HR Password Reset OTP',
       text: `Your OTP for HR password reset is: ${otp}. It expires in 10 minutes.`,
@@ -172,7 +179,9 @@ export const requestOTPForHr = async (req, res) => {
     res.json({ success: true, message: 'OTP sent to your email' });
   } catch (err) {
     console.error('Request OTP error:', err);
-    res.status(500).json({ success: false, message: 'Failed to send OTP. Server error.' });
+    res
+      .status(500)
+      .json({ success: false, message: 'Failed to send OTP. Server error.' });
   }
 };
 
@@ -184,21 +193,26 @@ export const resetPasswordWithOTPForHr = async (req, res) => {
 
   try {
     if (!email || !otp || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Email, OTP, and new password are required' });
+      return res.status(400).json({
+        success: false,
+        message: 'Email, OTP, and new password are required',
+      });
     }
 
     const hr = await Hr.findOne({ email });
-    if (!hr) return res.status(404).json({ success: false, message: 'HR with this email does not exist' });
+    if (!hr)
+      return res
+        .status(404)
+        .json({ success: false, message: 'HR with this email does not exist' });
 
     if (hr.otp !== otp || hr.otpExpires < new Date()) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Invalid or expired OTP' });
     }
 
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-
-    hr.password = hashedPassword;
-    hr.otp = undefined; // Clear OTP after successful reset
+    hr.password = await bcrypt.hash(newPassword, 10);
+    hr.otp = undefined;
     hr.otpExpires = undefined;
     await hr.save();
 

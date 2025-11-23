@@ -7,54 +7,54 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 
-// ---- Validate required env vars (fail fast) ----
-const requiredEnvs = ["EMAIL_USER", "EMAIL_PASS", "JWT_SECRET"];
-const missing = requiredEnvs.filter((k) => !process.env[k]);
+// ---- Validate required env vars ----
+const requiredEnvs = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "FROM_EMAIL", "JWT_SECRET"];
+const missing = requiredEnvs.filter(k => !process.env[k]);
 
 if (missing.length) {
-  console.error(
-    `FATAL: Missing required environment variables: ${missing.join(", ")}. ` +
-    `Please set them in your .env or environment. Exiting.`
-  );
-  // Stop startup so you don't run without email/JWT configured
+  console.error("Missing ENV variables:", missing.join(", "));
   process.exit(1);
 }
 
 // =====================
-// Email Transporter Setup
+// Email Transporter Setup (BREVO SMTP)
 // =====================
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: false, // Brevo uses TLS on port 587
   auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
   },
 });
 
-// optional: verify transporter at startup (will surface auth errors early)
-transporter.verify().then(() => {
-  console.log("Mailer: SMTP transporter verified");
-}).catch((err) => {
-  console.error("Mailer verification failed:", err.message || err);
-  process.exit(1);
-});
+// verify SMTP connection
+transporter.verify()
+  .then(() => console.log("Brevo SMTP: Connected successfully"))
+  .catch(err => {
+    console.error("SMTP Connection Error:", err.message);
+    process.exit(1);
+  });
 
 // =====================
-// Utility: Generate 6-digit OTP
+// Utility: Generate OTP
 // =====================
-const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const generateOTP = () =>
+  Math.floor(100000 + Math.random() * 900000).toString();
 
 // =====================
 // SIGNUP
 // =====================
 export const signup = async (req, res) => {
   const { name, email, password, number } = req.body;
+
   try {
     let user = await User.findOne({ email });
-    if (user) return res.status(400).json({ success: false, message: "User already exists" });
+    if (user)
+      return res.status(400).json({ success: false, message: "User already exists" });
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     user = new User({ name, email, password: hashedPassword, number });
     await user.save();
@@ -71,26 +71,31 @@ export const signup = async (req, res) => {
 // =====================
 export const login = async (req, res) => {
   const { email, password } = req.body;
+
   try {
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ success: false, message: "Invalid credentials" });
+    if (!user)
+      return res.status(400).json({ success: false, message: "Invalid credentials" });
 
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials" });
+    if (!isMatch)
+      return res.status(400).json({ success: false, message: "Invalid credentials" });
 
     const payload = { user: { id: user.id } };
 
     jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1h" }, (err, token) => {
-      if (err) {
-        console.error("JWT sign error:", err);
-        return res.status(500).json({ success: false, message: "Server error" });
-      }
+      if (err) return res.status(500).json({ success: false, message: "Server error" });
 
       res.json({
         success: true,
         message: "Login successful",
         token,
-        user: { id: user._id, name: user.name, email: user.email, number: user.number },
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          number: user.number,
+        },
       });
     });
   } catch (err) {
@@ -100,7 +105,7 @@ export const login = async (req, res) => {
 };
 
 // =====================
-// REQUEST OTP for Password Reset
+// REQUEST OTP
 // =====================
 export const requestOTP = async (req, res) => {
   const { email } = req.body;
@@ -109,56 +114,50 @@ export const requestOTP = async (req, res) => {
     if (!email) return res.status(400).json({ success: false, message: "Email is required" });
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: "User with this email does not exist" });
+    if (!user)
+      return res.status(404).json({ success: false, message: "User not found" });
 
     const otp = generateOTP();
-    const otpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
     user.otp = otp;
     user.otpExpires = otpExpires;
     await user.save();
 
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: process.env.FROM_EMAIL,
       to: email,
-      subject: "Password Reset OTP",
-      text: `Your OTP for password reset is: ${otp}. It expires in 10 minutes.`,
+      subject: "Your Password Reset OTP",
+      text: `Your OTP is ${otp}. It expires in 10 minutes.`,
     };
 
     await transporter.sendMail(mailOptions);
 
-    res.json({ success: true, message: "OTP sent to your email" });
+    res.json({ success: true, message: "OTP sent to email" });
   } catch (err) {
     console.error("Request OTP error:", err);
-    // If it's a nodemailer/auth error, nodemailer throws -- surface it but don't leak secrets
-    res.status(500).json({ success: false, message: "Failed to send OTP. Server error." });
+    res.status(500).json({ success: false, message: "Failed to send OTP" });
   }
 };
 
 // =====================
-// RESET PASSWORD using OTP
+// RESET PASSWORD
 // =====================
 export const resetPasswordWithOTP = async (req, res) => {
   const { email, otp, newPassword } = req.body;
 
   try {
-    if (!email || !otp || !newPassword) {
-      return res.status(400).json({ success: false, message: "Email, OTP, and new password are required" });
-    }
-
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: "User with this email does not exist" });
+    if (!user)
+      return res.status(404).json({ success: false, message: "User not found" });
 
-    if (user.otp !== otp || user.otpExpires < new Date()) {
+    if (user.otp !== otp || user.otpExpires < new Date())
       return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
-    }
 
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(newPassword, salt);
-
-    user.password = hashedPassword;
+    user.password = await bcrypt.hash(newPassword, 10);
     user.otp = undefined;
     user.otpExpires = undefined;
+
     await user.save();
 
     res.json({ success: true, message: "Password reset successful" });
