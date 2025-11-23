@@ -39,13 +39,16 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Verify transporter at startup
-transporter.verify().then(() => {
-  console.log("✅ Mailer: SMTP transporter verified (Brevo)");
-}).catch((err) => {
-  console.error("❌ Mailer verification failed:", err.message || err);
-  process.exit(1);
-});
+// Verify transporter at startup (non-blocking)
+transporter.verify()
+  .then(() => {
+    console.log("✅ Mailer: SMTP transporter verified (Brevo)");
+  })
+  .catch((err) => {
+    console.error("⚠️ Mailer verification failed:", err.message || err);
+    console.log("📧 Will attempt to send emails anyway (verification can fail on some hosting platforms)");
+    // Don't exit - let the app run and try sending emails when needed
+  });
 
 // =====================
 // Utility: Generate 6-digit OTP
